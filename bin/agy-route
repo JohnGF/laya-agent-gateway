@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# agy-route: Pre-LLM System 1 model & session router for Antigravity CLI (agy)
+# ==============================================================================
+
+set -euo pipefail
+
+# Find laya-router on PATH or relative to script directory
+if command -v laya-router >/dev/null 2>&1; then
+    ROUTER="laya-router"
+else
+    ROUTER="$(dirname "${BASH_SOURCE[0]}")/laya-router"
+fi
+
+if [[ $# -eq 0 ]]; then
+    echo "Usage: agy-route <prompt> [extra agy options...]"
+    exit 1
+fi
+
+PROMPT="$1"
+shift || true
+
+# Fast System 1 classification: tier + session mode (~400ms)
+ROUTE_OUTPUT=$("$ROUTER" route "$PROMPT" 2>/dev/null || echo "flash interactive")
+TIER=$(echo "$ROUTE_OUTPUT" | awk '{print $1}')
+MODE=$(echo "$ROUTE_OUTPUT" | awk '{print $2}')
+
+case "$TIER" in
+    flash_lite)
+        MODEL="gemini-3.8-flash-low"
+        COLOR="\033[1;32m"
+        ;;
+    flash)
+        MODEL="gemini-3.8-flash-medium"
+        COLOR="\033[1;34m"
+        ;;
+    pro)
+        MODEL="gemini-3.1-pro-high"
+        COLOR="\033[1;35m"
+        ;;
+    *)
+        MODEL="gemini-3.8-flash-medium"
+        COLOR="\033[1;34m"
+        ;;
+esac
+
+# Check for explicit user flag overrides
+EXPLICIT_PRINT=false
+EXPLICIT_INTERACTIVE=false
+
+for arg in "$@"; do
+    if [[ "$arg" == "-p" ]] || [[ "$arg" == "--print" ]]; then
+        EXPLICIT_PRINT=true
+    elif [[ "$arg" == "-i" ]] || [[ "$arg" == "--prompt-interactive" ]] || [[ "$arg" == "-c" ]] || [[ "$arg" == "--continue" ]]; then
+        EXPLICIT_INTERACTIVE=true
+    fi
+done
+
+if [[ "$EXPLICIT_PRINT" == true ]]; then
+    FINAL_MODE="print"
+elif [[ "$EXPLICIT_INTERACTIVE" == true ]]; then
+    FINAL_MODE="interactive"
+else
+    FINAL_MODE="$MODE"
+fi
+
+if [[ "$FINAL_MODE" == "print" ]]; then
+    echo -e "\033[1;36m[Laya Pre-Router]\033[0m Routed to ${COLOR}${TIER}\033[0m | Mode: \033[1;33mprint (1-shot direct answer)\033[0m -> launching agy with \033[1m${MODEL}\033[0m"
+    exec agy --model "$MODEL" --print "$PROMPT" "$@"
+else
+    echo -e "\033[1;36m[Laya Pre-Router]\033[0m Routed to ${COLOR}${TIER}\033[0m | Mode: \033[1;36minteractive session\033[0m -> launching agy with \033[1m${MODEL}\033[0m"
+    exec agy --model "$MODEL" --prompt-interactive "$PROMPT" "$@"
+fi

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# claude-route: Pre-LLM System 1 model router for Claude Code
+# ==============================================================================
+
+set -euo pipefail
+
+if command -v laya-router >/dev/null 2>&1; then
+    ROUTER="laya-router"
+else
+    ROUTER="$(dirname "${BASH_SOURCE[0]}")/laya-router"
+fi
+
+if [[ $# -eq 0 ]]; then
+    echo "Usage: claude-route <prompt> [extra claude options...]"
+    exit 1
+fi
+
+PROMPT="$1"
+shift || true
+
+ROUTE_OUTPUT=$("$ROUTER" route "$PROMPT" 2>/dev/null || echo "flash interactive")
+TIER=$(echo "$ROUTE_OUTPUT" | awk '{print $1}')
+MODE=$(echo "$ROUTE_OUTPUT" | awk '{print $2}')
+
+case "$TIER" in
+    flash_lite)
+        MODEL="claude-3-5-haiku-20241022"
+        COLOR="\033[1;32m"
+        ;;
+    flash)
+        MODEL="claude-3-5-sonnet-20241022"
+        COLOR="\033[1;34m"
+        ;;
+    pro)
+        MODEL="claude-3-5-sonnet-20241022"
+        COLOR="\033[1;35m"
+        ;;
+    *)
+        MODEL="claude-3-5-sonnet-20241022"
+        COLOR="\033[1;34m"
+        ;;
+esac
+
+echo -e "\033[1;36m[Laya Pre-Router]\033[0m Routed to ${COLOR}${TIER}\033[0m | Mode: \033[1;36m${MODE}\033[0m -> launching claude with \033[1m${MODEL}\033[0m"
+
+if [[ "$MODE" == "print" ]]; then
+    exec claude --model "$MODEL" -p "$PROMPT" "$@"
+else
+    exec claude --model "$MODEL" "$PROMPT" "$@"
+fi

@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""
+Laya Agent Gateway: Zero-token System 1 task router and model tier classifier.
+Queries local warm laya.serve daemon (http://127.0.0.1:8791) via HTTP.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+import urllib.request
+import urllib.error
+
+SERVER_URL = os.environ.get("LAYA_SERVER_URL", "http://127.0.0.1:8791/v1/systemone")
+HEALTH_URL = os.environ.get("LAYA_HEALTH_URL", "http://127.0.0.1:8791/health")
+
+QUESTIONS_FAST_ROUTE = {
+    "model_tier": {
+        "type": "choice",
+        "instructions": "Classify task difficulty to select model tier",
+        "criteria": {
+            "flash_lite": "trivial, simple question, short answer, typo, basic fact",
+            "flash": "intermediate, standard coding or feature development",
+            "pro": "hard, complex, multi-step problem, deep architecture"
+        }
+    },
+    "interaction": {
+        "type": "choice",
+        "instructions": "Classify if this is a standalone informational question or an engineering task requiring repository changes",
+        "criteria": {
+            "qa": "standalone factual question, trivia, concept explanation, definition, general query",
+            "task": "code modification, debugging defect, running shell commands, refactoring files, git operations"
+        }
+    }
+}
+
+QUESTIONS_CORE = {
+    **QUESTIONS_FAST_ROUTE,
+    "complexity": {
+        "type": "score",
+        "instructions": "Estimate task complexity.",
+        "criteria": ["trivial", "normal", "complex", "very_complex"]
+    },
+    "risk": {
+        "type": "choice",
+        "instructions": "Estimate execution risk, advisory only.",
+        "criteria": {
+            "low": "ordinary reversible work, read-only, doc change, typo",
+            "medium": "code modification, schema update, dependency change requiring review",
+            "high": "destructive operation, credential or secret handling, live production deployment"
+        }
+    },
+    "needs_tools": {
+        "type": "noul",
+        "instructions": "Will this task likely require tools or command execution?"
+    }
+}
+
+QUESTIONS_FULL = {
+    **QUESTIONS_CORE,
+    "task_type": {
+        "type": "choice",
+        "instructions": "Classify the primary software engineering task.",
+        "criteria": {
+            "simple": "tiny edit or formatting",
+            "coding": "implementation or refactor",
+            "debugging": "investigate a defect",
+            "architecture": "system design",
+            "frontend": "UI or interaction",
+            "backend": "API or database",
+            "devops": "build, deployment or infrastructure",
+            "security": "security or authentication",
+            "research": "investigation or comparison",
+            "documentation": "documentation",
+            "testing": "tests or quality assurance",
+            "data": "data analysis or pipelines",
+            "other": "none of these"
+        }
+    },
+    "needs_strong_reasoning": {
+        "type": "noul",
+        "instructions": "Would this task benefit from stronger multi-step reasoning?"
+    },
+    "security_sensitive": {
+        "type": "noul",
+        "instructions": "Does this task involve security, credentials, permissions, or destructive changes?"
+    }
+}
+
+
+def check_health(timeout: float = 1.0) -> dict | None:
+    try:
+        req = urllib.request.Request(HEALTH_URL)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status == 200:
+                return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    return None
+
+
+def query_laya(prompt: str, questions: dict, timeout: float = 5.0) -> dict | None:
+    payload = {
+        "state": prompt,
+        "questions": questions
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        SERVER_URL,
+        data=data,
+        headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status == 200:
+                return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    return None
+
+
+def fast_route(prompt: str, timeout: float = 3.0) -> dict:
+    t0 = time.perf_counter()
+    result = query_laya(prompt, QUESTIONS_FAST_ROUTE, timeout=timeout)
+    elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+
+    if not result:
+        return {
+            "status": "fallback",
+            "model_tier": "flash",
+            "mode": "interactive",
+            "elapsed_ms": elapsed_ms
+        }
+
+    answers = result.get("answers", {})
+    tier = answers.get("model_tier", {}).get("choice", "flash")
+    interaction = answers.get("interaction", {}).get("choice", "task")
+    mode = "print" if interaction == "qa" else "interactive"
+
+    return {
+        "status": "ok",
+        "model_tier": tier,
+        "mode": mode,
+        "elapsed_ms": elapsed_ms,
+        "answers": answers
+    }
+
+
+def decide(prompt: str, full: bool = False, timeout: float = 5.0) -> dict:
+    t0 = time.perf_counter()
+    questions = QUESTIONS_FULL if full else QUESTIONS_CORE
+    result = query_laya(prompt, questions, timeout=timeout)
+    elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+
+    if not result:
+        return {
+            "status": "fallback",
+            "model_tier": "flash",
+            "mode": "interactive",
+            "elapsed_ms": elapsed_ms,
+            "answers": {
+                "model_tier": {"choice": "flash", "confidence": 0.5},
+                "interaction": {"choice": "task", "confidence": 0.5},
+                "complexity": {"score": 1.0},
+                "risk": {"choice": "medium", "confidence": 0.5},
+                "needs_tools": {"value": True, "confidence": 0.5}
+            }
+        }
+
+    answers = result.get("answers", {})
+    tier = answers.get("model_tier", {}).get("choice", "flash")
+    interaction = answers.get("interaction", {}).get("choice", "task")
+    mode = "print" if interaction == "qa" else "interactive"
+
+    return {
+        "status": "ok",
+        "model_tier": tier,
+        "mode": mode,
+        "elapsed_ms": elapsed_ms,
+        "answers": answers,
+        "routing": result.get("routing", {}),
+        "usage": result.get("usage", {})
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Laya System 1 Task Dispatcher & Model Router")
+    subparsers = parser.add_subparsers(dest="command")
+
+    decide_parser = subparsers.add_parser("decide", help="Classify task and recommend model tier")
+    decide_parser.add_argument("prompt", nargs="+", help="User task or prompt to classify")
+    decide_parser.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    decide_parser.add_argument("--full", action="store_true", help="Run full 7-question analysis instead of fast core rubric")
+
+    route_parser = subparsers.add_parser("route", help="Fast 2-question classification: model_tier and session mode")
+    route_parser.add_argument("prompt", nargs="+", help="User task or prompt")
+    route_parser.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+
+    tier_parser = subparsers.add_parser("tier", help="Output only the model tier (flash_lite|flash|pro)")
+    tier_parser.add_argument("prompt", nargs="+", help="User task or prompt")
+
+    subparsers.add_parser("health", help="Check status of Laya daemon")
+    subparsers.add_parser("status", help="Alias for health")
+
+    args_list = sys.argv[1:]
+    if args_list and args_list[0] not in ("decide", "route", "tier", "health", "status", "-h", "--help"):
+        args_list = ["decide"] + args_list
+
+    args = parser.parse_args(args_list)
+
+    if args.command in ("health", "status"):
+        health = check_health()
+        if health:
+            print(json.dumps({"status": "ready", "server": health}, indent=2))
+            sys.exit(0)
+        else:
+            print(json.dumps({"status": "unavailable", "error": "laya.serve daemon not reachable at " + HEALTH_URL}, indent=2))
+            sys.exit(1)
+
+    if args.command == "route":
+        prompt = " ".join(args.prompt)
+        res = fast_route(prompt)
+        if args.json:
+            print(json.dumps(res, indent=2))
+        else:
+            print(f"{res['model_tier']} {res['mode']}")
+        sys.exit(0)
+
+    if args.command == "tier":
+        prompt = " ".join(args.prompt)
+        res = fast_route(prompt)
+        print(res.get("model_tier", "flash"))
+        sys.exit(0)
+
+    if args.command == "decide":
+        prompt = " ".join(args.prompt)
+        res = decide(prompt, full=args.full)
+        if args.json:
+            print(json.dumps(res, indent=2))
+        else:
+            tier = res.get("model_tier", "flash")
+            mode = res.get("mode", "interactive")
+            elapsed = res.get("elapsed_ms", 0)
+            status = res.get("status", "unknown")
+            answers = res.get("answers", {})
+
+            color_tier = {
+                "flash_lite": "\033[1;32mflash_lite\033[0m",
+                "flash": "\033[1;34mflash\033[0m",
+                "pro": "\033[1;35mpro\033[0m"
+            }.get(tier, tier)
+
+            color_mode = "\033[1;33mprint (1-shot direct answer)\033[0m" if mode == "print" else "\033[1;36minteractive session\033[0m"
+
+            print(f"\033[1;36m[Laya System 1 Router]\033[0m {color_tier} | Mode: {color_mode} ({elapsed}ms)")
+            for k, v in answers.items():
+                val = v.get("choice") if "choice" in v else v.get("score") if "score" in v else v.get("value")
+                conf = v.get("confidence") or v.get("answer_confidence") or 0.0
+                print(f"  • {k:22s} : {val} (conf: {conf:.2f})")
+        sys.exit(0)
+
+    parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
