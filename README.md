@@ -1,4 +1,8 @@
-# Laya Agent Gateway
+# ⚡ Laya Agent Gateway
+
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
+[![Status](https://img.shields.io/badge/status-active-success.svg)](#)
 
 High-speed, zero-token System 1 decision gateway for AI coding agents (Antigravity CLI, OpenCode, Claude Code, Codex).
 
@@ -30,20 +34,65 @@ When a user submits a prompt, typical workflows launch a heavy frontier LLM and 
 
 ---
 
+## Key Features
+
+* 🚀 **Sub-second Routing:** Evaluates complex intents in ~400ms using a local CPU model, zero latency penalty compared to large remote calls.
+* 💸 **Zero Token Cost:** Preserves your expensive frontier model budget for tasks that actually need deep reasoning.
+* 🧠 **Dual-Axis Classification:** Right-sizes both the **model tier** and the **session mode** to give you exactly what you need.
+* 🔌 **Universal Agent Support:** Drops straight in front of Antigravity CLI, OpenCode, and Claude Code without changing your workflow.
+* 🛡️ **In-Flight Safety Guardrails:** Integrates directly with Laya MCP for subagent sizing and dangerous diff verification.
+
+---
+
 ## Architecture
 
+```mermaid
+flowchart TD
+    User([User Prompt]) --> Gateway[Laya Agent Gateway]
+    
+    subgraph System 1 Decision Layer
+        Gateway -- ~400ms Forward Pass --> TierEval{1. Model Tier}
+        Gateway --> ModeEval{2. Session Mode}
+    end
+    
+    TierEval -->|Trivial/Facts| Lite[flash_lite]
+    TierEval -->|Standard Code| Flash[flash]
+    TierEval -->|Complex/Arch| Pro[pro]
+    
+    ModeEval -->|Q&A| PrintMode[1-Shot Direct Answer]
+    ModeEval -->|Task| InteractiveMode[Interactive Session]
+    
+    Lite -.-> PrintMode
+    Lite -.-> InteractiveMode
+    Flash -.-> InteractiveMode
+    Pro -.-> InteractiveMode
+    
+    PrintMode --> AgyPrint[agy --model flash-low -p<br/>*(No zombie session created)*]
+    InteractiveMode --> AgyInt[agy --model flash -i<br/>*(Full workspace tools)*]
+    Pro --> AgyPro[agy --model pro -i<br/>*(Frontier reasoning)*]
+
+    style Gateway fill:#f9f,stroke:#333,stroke-width:2px
+    style System 1 Decision Layer fill:#e1f5fe,stroke:#0288d1,stroke-width:2px
 ```
-User Prompt
-    │
-    ▼
-[Laya Agent Gateway] ──(~400ms forward pass)──► 1. Model Tier (flash_lite / flash / pro)
-    │                                            2. Session Mode (print vs interactive)
-    │
-    ├─────────────────────────────┬─────────────────────────────┐
-    ▼                             ▼                             ▼
-[1-Shot Direct Answer]      [Interactive Coding]      [Complex Architecture]
-agy --model flash-low -p    agy --model flash -i       agy --model pro -i
-(No zombie session created) (Full workspace tools)    (Frontier reasoning)
+
+---
+
+## Project Structure
+
+```
+laya-agent-gateway/
+├── bin/                 # Executable CLI tools
+│   ├── agy-route        # Pre-LLM router for Antigravity CLI
+│   ├── claude-route     # Pre-LLM router for Claude Code
+│   ├── laya-router      # Core system 1 task dispatcher
+│   └── oc-route         # Pre-LLM router for OpenCode
+├── skills/              # Agent skill configurations
+│   └── laya-router/     # Laya router skill spec
+├── systemd/             # Systemd service configurations
+│   └── laya.service     # Daemon service file
+├── tests/               # Comprehensive test suite
+├── install.sh           # Automated installer
+└── README.md            # You are here
 ```
 
 ---
